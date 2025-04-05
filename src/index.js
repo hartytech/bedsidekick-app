@@ -53,11 +53,15 @@ wss.on('connection', (ws) => {
         const response = await gemini.generateResponse(data.audio);
         console.log('Gemini response:', response);
         
-        // Send text response to client
-        ws.send(JSON.stringify({ type: 'text', data: response }));
+        // Send structured response to client
+        ws.send(JSON.stringify({ 
+          type: 'response',
+          text: response.voiceResponse,
+          stressLevel: response.stressLevel
+        }));
         
-        // Convert to speech
-        await elevenlabs.textToSpeech(response);
+        // Convert voice response to speech
+        await elevenlabs.textToSpeech(response.voiceResponse);
       }
     } catch (error) {
       console.error('Error handling message:', error);

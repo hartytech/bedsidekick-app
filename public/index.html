@@ -76,6 +76,21 @@
             background-color: #007bff;
             transition: height 0.1s;
         }
+        .stress-meter {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #f5f5f5;
+        }
+        .stress-level {
+            font-weight: bold;
+        }
+        .stress-bar {
+            height: 10px;
+            margin-top: 5px;
+            border-radius: 5px;
+            transition: width 0.3s ease;
+        }
     </style>
 </head>
 <body>
@@ -108,7 +123,7 @@
         let isRecording = false;
         let recordingChunks = []; // For recording
         let playbackChunks = []; // For playback
-        const SILENCE_THRESHOLD = 0.1;
+        const SILENCE_THRESHOLD = 0.08;
         const SILENCE_DURATION = 1000;
 
         // Create visualizer bars
@@ -242,60 +257,57 @@
             startBtn.disabled = false;
         };
 
-        ws.onmessage = (event) => {
-            console.log('WebSocket message received:', event.data.substring(0, 100) + '...');
-            
+        ws.onmessage = async (event) => {
             try {
-                const data = JSON.parse(event.data);
-                console.log('Message type:', data.type);
-                
-                if (data.type === 'text') {
-                    responseDiv.textContent += data.data;
-                } else if (data.type === 'audio') {
-                    console.log('Received audio chunk');
+                const message = JSON.parse(event.data);
+                console.log('Received message:', message);
+
+                if (message.type === 'response') {
+                    // Display text response
+                    const responseDiv = document.getElementById('response');
+                    responseDiv.innerHTML = `
+                        <p>${message.text}</p>
+                        <div class="stress-meter">
+                            Stress Level: <span class="stress-level">${message.stressLevel}</span>
+                            <div class="stress-bar" style="width: ${message.stressLevel * 20}%; background-color: ${getStressColor(message.stressLevel)}"></div>
+                        </div>
+                    `;
+                } else if (message.type === 'audio') {
+                    // Handle audio response
+                    const audioData = message.data;
+                    const audioBlob = new Blob([Uint8Array.from(atob(audioData), c => c.charCodeAt(0))], { type: 'audio/mp3' });
+                    const audioUrl = URL.createObjectURL(audioBlob);
                     
-                    // Convert base64 to binary
-                    const binaryString = window.atob(data.data);
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
-                    
-                    // Create a new blob and play it immediately
-                    const blob = new Blob([bytes], { type: 'audio/mpeg' });
-                    const url = URL.createObjectURL(blob);
-                    
-                    console.log('Created blob URL:', url);
-                    
-                    // Update audio player
-                    audioPlayer.src = url;
+                    const audioPlayer = document.getElementById('audioPlayer');
+                    audioPlayer.src = audioUrl;
                     audioPlayer.onloadedmetadata = () => {
-                        console.log('Audio loaded, duration:', audioPlayer.duration);
-                        audioPlayer.play().catch(error => {
-                            console.error('Error playing audio:', error);
-                        });
+                        console.log('Audio duration:', audioPlayer.duration);
+                        audioPlayer.play();
                     };
-                    
-                    // Clean up old URL after playing
                     audioPlayer.onended = () => {
-                        console.log('Audio playback finished, cleaning up');
-                        URL.revokeObjectURL(url);
+                        URL.revokeObjectURL(audioUrl);
                     };
-                } else if (data.type === 'error') {
-                    console.error('Server error:', data.data);
-                    responseDiv.textContent += `\nError: ${data.data}`;
+                } else if (message.type === 'error') {
+                    console.error('Server error:', message.data);
+                    responseDiv.textContent += `\nError: ${message.data}`;
                 } else {
-                    console.log('Unknown message type:', data.type);
+                    console.log('Unknown message type:', message.type);
                 }
             } catch (error) {
-                console.error('Error processing WebSocket message:', error);
-                console.error('Error details:', {
-                    message: error.message,
-                    stack: error.stack,
-                    data: event.data.substring(0, 100) + '...'
-                });
+                console.error('Error handling WebSocket message:', error);
             }
         };
+
+        function getStressColor(level) {
+            const colors = {
+                1: '#4CAF50', // Green
+                2: '#8BC34A', // Light Green
+                3: '#FFC107', // Yellow
+                4: '#FF9800', // Orange
+                5: '#F44336'  // Red
+            };
+            return colors[level] || colors[3];
+        }
 
         ws.onerror = (error) => {
             console.error('WebSocket error:', error);
