@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BedsideKick</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            margin-right: 10px;
+            border: none;
+            border-radius: 4px;
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #cccccc;
+        }
+        #status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .listening {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        #response {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            min-height: 100px;
+            white-space: pre-wrap;
+        }
+        #audioPlayer {
+            margin-top: 20px;
+            width: 100%;
+        }
+        #visualizer {
+            width: 100%;
+            height: 100px;
+            background-color: #f0f0f0;
+            margin: 20px 0;
+            position: relative;
+        }
+        .bar {
+            position: absolute;
+            bottom: 0;
+            width: 2px;
+            background-color: #007bff;
+            transition: height 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>BedsideKick</h1>
+        <div class="controls">
+            <button id="startBtn">Start Listening</button>
+            <button id="stopBtn" disabled>Stop</button>
+        </div>
+        <div id="status" class="disconnected">Disconnected</div>
+        <div id="visualizer"></div>
+        <div id="response"></div>
+        <audio id="audioPlayer" controls></audio>
+    </div>
+
+    <script>
+        const ws = new WebSocket(`ws://${window.location.host}`);
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusDiv = document.getElementById('status');
+        const responseDiv = document.getElementById('response');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const visualizer = document.getElementById('visualizer');
+        
+        let mediaRecorder;
+        let audioContext;
+        let analyser;
+        let microphone;
+        let silenceTimeout;
+        let isRecording = false;
+        let recordingChunks = []; // For recording
+        let playbackChunks = []; // For playback
+        const SILENCE_THRESHOLD = 0.1;
+        const SILENCE_DURATION = 1000;
+
+        // Create visualizer bars
+        const barCount = 100;
+        const bars = [];
+        for (let i = 0; i < barCount; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'bar';
+            bar.style.left = `${(i / barCount) * 100}%`;
+            visualizer.appendChild(bar);
+            bars.push(bar);
+        }
+
+        function updateVisualizer(dataArray) {
+            const step = Math.floor(dataArray.length / barCount);
+            for (let i = 0; i < barCount; i++) {
+                const value = dataArray[i * step] / 255;
+                bars[i].style.height = `${value * 100}%`;
+            }
+        }
+
+        function checkSilence(dataArray) {
+            const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+            const normalizedAverage = average / 255; // Normalize to 0-1 range
+            console.log('Audio level:', normalizedAverage.toFixed(4), 'Threshold:', SILENCE_THRESHOLD);
+            return normalizedAverage < SILENCE_THRESHOLD;
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Set up audio context and analyser
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 2048;
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                
+                mediaRecorder = new MediaRecorder(stream);
+                recordingChunks = []; // Clear recording chunks
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    recordingChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    console.log('Processing audio chunk...');
+                    const audioBlob = new Blob(recordingChunks, { type: 'audio/wav' });
+                    const reader = new FileReader();
+                    
+                    reader.onload = () => {
+                        const base64Audio = reader.result.split(',')[1];
+                        ws.send(JSON.stringify({
+                            type: 'start',
+                            audio: base64Audio,
+                            format: 'audio/wav'
+                        }));
+                    };
+                    
+                    reader.readAsDataURL(audioBlob);
+                    recordingChunks = []; // Clear after sending
+                };
+                
+                // Start recording
+                mediaRecorder.start(100); // Collect data every 100ms
+                isRecording = true;
+                statusDiv.textContent = 'Listening...';
+                statusDiv.className = 'status listening';
+                
+                // Continuously check for silence
+                function checkAudioLevel() {
+                    if (!isRecording) return;
+                    
+                    analyser.getByteFrequencyData(dataArray);
+                    updateVisualizer(dataArray);
+                    
+                    const isSilent = checkSilence(dataArray);
+                    
+                    if (isSilent) {
+                        if (!silenceTimeout) {
+                            console.log('Silence detected, starting timeout...');
+                            silenceTimeout = setTimeout(() => {
+                                if (isRecording) {
+                                    console.log('Silence duration reached, processing audio...');
+                                    mediaRecorder.stop();
+                                    mediaRecorder.start(100);
+                                }
+                            }, SILENCE_DURATION);
+                        }
+                    } else {
+                        if (silenceTimeout) {
+                            console.log('Audio detected, clearing silence timeout');
+                            clearTimeout(silenceTimeout);
+                            silenceTimeout = null;
+                        }
+                    }
+                    
+                    requestAnimationFrame(checkAudioLevel);
+                }
+                
+                checkAudioLevel();
+                
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                statusDiv.textContent = 'Error accessing microphone';
+                statusDiv.className = 'status disconnected';
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                isRecording = false;
+                mediaRecorder.stop();
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                if (audioContext) {
+                    audioContext.close();
+                }
+                recordingChunks = [];
+                statusDiv.textContent = 'Stopped';
+                statusDiv.className = 'status disconnected';
+            }
+        }
+
+        ws.onopen = () => {
+            statusDiv.textContent = 'Connected';
+            statusDiv.className = 'status connected';
+            startBtn.disabled = false;
+        };
+
+        ws.onmessage = (event) => {
+            console.log('WebSocket message received:', event.data.substring(0, 100) + '...');
+            
+            try {
+                const data = JSON.parse(event.data);
+                console.log('Message type:', data.type);
+                
+                if (data.type === 'text') {
+                    responseDiv.textContent += data.data;
+                } else if (data.type === 'audio') {
+                    console.log('Received audio chunk');
+                    
+                    // Convert base64 to binary
+                    const binaryString = window.atob(data.data);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    
+                    // Create a new blob and play it immediately
+                    const blob = new Blob([bytes], { type: 'audio/mpeg' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    console.log('Created blob URL:', url);
+                    
+                    // Update audio player
+                    audioPlayer.src = url;
+                    audioPlayer.onloadedmetadata = () => {
+                        console.log('Audio loaded, duration:', audioPlayer.duration);
+                        audioPlayer.play().catch(error => {
+                            console.error('Error playing audio:', error);
+                        });
+                    };
+                    
+                    // Clean up old URL after playing
+                    audioPlayer.onended = () => {
+                        console.log('Audio playback finished, cleaning up');
+                        URL.revokeObjectURL(url);
+                    };
+                } else if (data.type === 'error') {
+                    console.error('Server error:', data.data);
+                    responseDiv.textContent += `\nError: ${data.data}`;
+                } else {
+                    console.log('Unknown message type:', data.type);
+                }
+            } catch (error) {
+                console.error('Error processing WebSocket message:', error);
+                console.error('Error details:', {
+                    message: error.message,
+                    stack: error.stack,
+                    data: event.data.substring(0, 100) + '...'
+                });
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+        };
+
+        ws.onclose = (event) => {
+            console.log('WebSocket closed:', event.code, event.reason);
+            statusDiv.textContent = 'Disconnected';
+            statusDiv.className = 'status disconnected';
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+        };
+
+        startBtn.onclick = startRecording;
+        stopBtn.onclick = stopRecording;
+    </script>
+</body>
+</html> 
