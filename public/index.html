@@ -8,9 +8,8 @@
         body {
             font-family: Arial, sans-serif;
             max-width: 800px;
-            margin: 0 auto;
+            margin: 20px auto;
             padding: 20px;
-            background-color: #f5f5f5;
         }
         .container {
             background-color: white;
@@ -19,19 +18,22 @@
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .controls {
-            margin-bottom: 20px;
+            margin: 20px 0;
+            display: flex;
+            align-items: center;
+            gap: 20px;
         }
         button {
             padding: 10px 20px;
-            margin-right: 10px;
             border: none;
-            border-radius: 4px;
-            background-color: #007bff;
+            border-radius: 5px;
+            background-color: #4CAF50;
             color: white;
             cursor: pointer;
+            transition: background-color 0.3s;
         }
-        button:disabled {
-            background-color: #cccccc;
+        button:hover {
+            background-color: #45a049;
         }
         #status {
             margin: 10px 0;
@@ -53,43 +55,78 @@
         #response {
             margin-top: 20px;
             padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            min-height: 100px;
-            white-space: pre-wrap;
+            border-radius: 8px;
+            background-color: #fff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         #audioPlayer {
+            width: 100%;
             margin-top: 20px;
-            width: 100%;
         }
-        #visualizer {
-            width: 100%;
+        #audioVisualization {
+            width: 20px;
             height: 100px;
             background-color: #f0f0f0;
-            margin: 20px 0;
+            margin: 10px;
             position: relative;
+            border-radius: 5px;
+            overflow: hidden;
         }
-        .bar {
+        #audioLevel {
             position: absolute;
             bottom: 0;
-            width: 2px;
-            background-color: #007bff;
+            width: 100%;
+            background-color: #4CAF50;
             transition: height 0.1s;
         }
+        .wake-threshold-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background-color: #FF9800;
+            bottom: 10%;
+        }
+        .silence-threshold-line {
+            position: absolute;
+            width: 100%;
+            height: 2px;
+            background-color: #F44336;
+            bottom: 5%;
+        }
         .stress-meter {
-            margin-top: 10px;
-            padding: 10px;
-            border-radius: 5px;
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
             background-color: #f5f5f5;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .stress-level {
             font-weight: bold;
+            margin-bottom: 8px;
+            display: block;
         }
         .stress-bar {
-            height: 10px;
-            margin-top: 5px;
-            border-radius: 5px;
-            transition: width 0.3s ease;
+            height: 12px;
+            margin-top: 8px;
+            border-radius: 6px;
+            transition: all 0.3s ease;
+            background-color: #ddd;
+            position: relative;
+        }
+        .stress-bar-fill {
+            height: 100%;
+            border-radius: 6px;
+            transition: width 0.3s ease, background-color 0.3s ease;
+            width: 0%;
+        }
+        .visualization-container {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .thresholds {
+            font-size: 12px;
+            color: #666;
         }
     </style>
 </head>
@@ -97,11 +134,20 @@
     <div class="container">
         <h1>BedsideKick</h1>
         <div class="controls">
-            <button id="startBtn">Start Listening</button>
-            <button id="stopBtn" disabled>Stop</button>
+            <button id="startBtn" onclick="startRecording()">Start Listening</button>
         </div>
         <div id="status" class="disconnected">Disconnected</div>
-        <div id="visualizer"></div>
+        <div class="visualization-container">
+            <div id="audioVisualization">
+                <div id="audioLevel"></div>
+                <div class="wake-threshold-line"></div>
+                <div class="silence-threshold-line"></div>
+            </div>
+            <div class="thresholds">
+                <div>Wake Threshold: 0.1</div>
+                <div>Silence Threshold: 0.05</div>
+            </div>
+        </div>
         <div id="response"></div>
         <audio id="audioPlayer" controls></audio>
     </div>
@@ -109,11 +155,9 @@
     <script>
         const ws = new WebSocket(`ws://${window.location.host}`);
         const startBtn = document.getElementById('startBtn');
-        const stopBtn = document.getElementById('stopBtn');
         const statusDiv = document.getElementById('status');
         const responseDiv = document.getElementById('response');
         const audioPlayer = document.getElementById('audioPlayer');
-        const visualizer = document.getElementById('visualizer');
         
         let mediaRecorder;
         let audioContext;
@@ -123,8 +167,13 @@
         let isRecording = false;
         let recordingChunks = []; // For recording
         let playbackChunks = []; // For playback
-        const SILENCE_THRESHOLD = 0.08;
-        const SILENCE_DURATION = 1000;
+        const SILENCE_THRESHOLD = 0.05;
+        const WAKE_THRESHOLD = 0.1;
+        const MIN_SPEECH_DURATION = 1000;
+        const MAX_SILENCE_DURATION = 1000;
+        let silenceStart = null;
+        let speechStart = null;
+        let isSpeaking = false;
 
         // Create visualizer bars
         const barCount = 100;
@@ -133,7 +182,7 @@
             const bar = document.createElement('div');
             bar.className = 'bar';
             bar.style.left = `${(i / barCount) * 100}%`;
-            visualizer.appendChild(bar);
+            document.getElementById('audioVisualization').appendChild(bar);
             bars.push(bar);
         }
 
@@ -157,23 +206,46 @@
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 
                 // Set up audio context and analyser
-                audioContext = new AudioContext();
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(stream);
                 analyser = audioContext.createAnalyser();
                 analyser.fftSize = 2048;
-                microphone = audioContext.createMediaStreamSource(stream);
-                microphone.connect(analyser);
+                source.connect(analyser);
                 
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Uint8Array(bufferLength);
+                // Store stream for reuse
+                window.audioStream = stream;
                 
-                mediaRecorder = new MediaRecorder(stream);
-                recordingChunks = []; // Clear recording chunks
+                startNewRecording();
+                monitorAudioLevel();
                 
-                mediaRecorder.ondataavailable = (event) => {
+                document.getElementById('startBtn').textContent = 'Stop Recording';
+            } catch (error) {
+                console.error('Error starting recording:', error);
+            }
+        }
+
+        function startNewRecording() {
+            if (!window.audioStream) return;
+            
+            // Set up media recorder
+            mediaRecorder = new MediaRecorder(window.audioStream);
+            recordingChunks = [];
+            
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
                     recordingChunks.push(event.data);
-                };
-                
-                mediaRecorder.onstop = async () => {
+                }
+            };
+            
+            mediaRecorder.onstop = async () => {
+                if (recordingChunks.length === 0) {
+                    console.log('No audio data recorded');
+                    startNewRecording(); // Restart recording
+                    return;
+                }
+
+                // Only process if we have enough speech duration
+                if (speechStart && Date.now() - speechStart >= MIN_SPEECH_DURATION) {
                     console.log('Processing audio chunk...');
                     const audioBlob = new Blob(recordingChunks, { type: 'audio/wav' });
                     const reader = new FileReader();
@@ -188,67 +260,85 @@
                     };
                     
                     reader.readAsDataURL(audioBlob);
-                    recordingChunks = []; // Clear after sending
-                };
-                
-                // Start recording
-                mediaRecorder.start(100); // Collect data every 100ms
-                isRecording = true;
-                statusDiv.textContent = 'Listening...';
-                statusDiv.className = 'status listening';
-                
-                // Continuously check for silence
-                function checkAudioLevel() {
-                    if (!isRecording) return;
-                    
-                    analyser.getByteFrequencyData(dataArray);
-                    updateVisualizer(dataArray);
-                    
-                    const isSilent = checkSilence(dataArray);
-                    
-                    if (isSilent) {
-                        if (!silenceTimeout) {
-                            console.log('Silence detected, starting timeout...');
-                            silenceTimeout = setTimeout(() => {
-                                if (isRecording) {
-                                    console.log('Silence duration reached, processing audio...');
-                                    mediaRecorder.stop();
-                                    mediaRecorder.start(100);
-                                }
-                            }, SILENCE_DURATION);
-                        }
-                    } else {
-                        if (silenceTimeout) {
-                            console.log('Audio detected, clearing silence timeout');
-                            clearTimeout(silenceTimeout);
-                            silenceTimeout = null;
-                        }
-                    }
-                    
-                    requestAnimationFrame(checkAudioLevel);
+                } else {
+                    console.log('Audio clip too short, discarding...');
                 }
                 
-                checkAudioLevel();
+                recordingChunks = [];
+                speechStart = null;
+                isSpeaking = false;
                 
-            } catch (error) {
-                console.error('Error accessing microphone:', error);
-                statusDiv.textContent = 'Error accessing microphone';
-                statusDiv.className = 'status disconnected';
+                // Start a new recording session
+                startNewRecording();
+            };
+            
+            // Start recording
+            mediaRecorder.start();
+            isRecording = true;
+        }
+
+        function monitorAudioLevel() {
+            if (!isRecording) return;
+
+            const dataArray = new Float32Array(analyser.fftSize);
+            analyser.getFloatTimeDomainData(dataArray);
+            
+            // Calculate RMS value
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i] * dataArray[i];
             }
+            const rms = Math.sqrt(sum / dataArray.length);
+            
+            // Update audio level visualization
+            const levelMeter = document.getElementById('audioLevel');
+            levelMeter.style.height = `${rms * 100}%`;
+            
+            // Check if we're above wake threshold
+            if (rms > WAKE_THRESHOLD) {
+                if (!isSpeaking) {
+                    console.log('Speech detected above wake threshold');
+                    speechStart = Date.now();
+                    isSpeaking = true;
+                    silenceStart = null;
+                }
+            } 
+            // Check if we're below silence threshold
+            else if (rms < SILENCE_THRESHOLD) {
+                if (isSpeaking) {
+                    if (!silenceStart) {
+                        silenceStart = Date.now();
+                    } else if (Date.now() - silenceStart > MAX_SILENCE_DURATION) {
+                        console.log('Silence detected, stopping current recording');
+                        if (mediaRecorder && mediaRecorder.state === 'recording') {
+                            mediaRecorder.stop();
+                        }
+                    }
+                }
+            } else {
+                silenceStart = null;
+            }
+            
+            // Continue monitoring
+            requestAnimationFrame(monitorAudioLevel);
         }
 
         function stopRecording() {
+            isRecording = false;
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                isRecording = false;
                 mediaRecorder.stop();
-                mediaRecorder.stream.getTracks().forEach(track => track.stop());
-                if (audioContext) {
-                    audioContext.close();
-                }
-                recordingChunks = [];
-                statusDiv.textContent = 'Stopped';
-                statusDiv.className = 'status disconnected';
             }
+            if (window.audioStream) {
+                window.audioStream.getTracks().forEach(track => track.stop());
+                window.audioStream = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+            }
+            recordingChunks = [];
+            statusDiv.textContent = 'Stopped';
+            statusDiv.className = 'status disconnected';
+            document.getElementById('startBtn').textContent = 'Start Listening';
         }
 
         ws.onopen = () => {
@@ -263,17 +353,21 @@
                 console.log('Received message:', message);
 
                 if (message.type === 'response') {
-                    // Display text response
+                    // Display text response and stress level
                     const responseDiv = document.getElementById('response');
+                    const stressColor = getStressColor(message.stressLevel);
+                    
                     responseDiv.innerHTML = `
                         <p>${message.text}</p>
                         <div class="stress-meter">
-                            Stress Level: <span class="stress-level">${message.stressLevel}</span>
-                            <div class="stress-bar" style="width: ${message.stressLevel * 20}%; background-color: ${getStressColor(message.stressLevel)}"></div>
+                            <span class="stress-level">Stress Level: ${message.stressLevel}</span>
+                            <div class="stress-bar">
+                                <div class="stress-bar-fill" style="width: ${message.stressLevel * 20}%; background-color: ${stressColor};"></div>
+                            </div>
                         </div>
                     `;
                 } else if (message.type === 'audio') {
-                    // Handle audio response
+                    // Handle audio playback
                     const audioData = message.data;
                     const audioBlob = new Blob([Uint8Array.from(atob(audioData), c => c.charCodeAt(0))], { type: 'audio/mp3' });
                     const audioUrl = URL.createObjectURL(audioBlob);
@@ -300,11 +394,11 @@
 
         function getStressColor(level) {
             const colors = {
-                1: '#4CAF50', // Green
-                2: '#8BC34A', // Light Green
-                3: '#FFC107', // Yellow
-                4: '#FF9800', // Orange
-                5: '#F44336'  // Red
+                1: '#4CAF50', // Green - Very calm
+                2: '#8BC34A', // Light Green - Mostly calm
+                3: '#FFC107', // Yellow - Neutral
+                4: '#FF9800', // Orange - Stressed
+                5: '#F44336'  // Red - Highly stressed
             };
             return colors[level] || colors[3];
         }
@@ -318,11 +412,11 @@
             statusDiv.textContent = 'Disconnected';
             statusDiv.className = 'status disconnected';
             startBtn.disabled = true;
-            stopBtn.disabled = true;
+            stopRecording();
         };
 
         startBtn.onclick = startRecording;
-        stopBtn.onclick = stopRecording;
     </script>
 </body>
+</html> 
 </html> 

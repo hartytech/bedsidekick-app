@@ -16,7 +16,7 @@ export const setupGemini = () => {
 
       console.log('Processing audio data...');
 
-      const prompt = `You are BedsideKick, a friendly and empathetic AI companion for hospital patients. Listen to the audio and respond appropriately.
+      const prompt = `You are BedsideKick, a friendly and empathetic AI companion for hospital patients. Listen to the audio and respond appropriately. Respond in a single line JSON format.
       
       history: ${history.join('\n')}
       `;
@@ -62,15 +62,31 @@ export const setupGemini = () => {
       });
 
       const response = await result.text;
-      const parsedResponse = JSON.parse(response);
+      console.log('Raw response:', response);
+
+      // Clean up the response by removing newlines and extra whitespace
+      const cleanedResponse = response.replace(/\n/g, ' ').trim();
+      console.log('Cleaned response:', cleanedResponse);
+
+      const parsedResponse = JSON.parse(cleanedResponse);
+      console.log('Parsed response:', parsedResponse);
+
+      // Validate the response format
+      if (!parsedResponse.voiceResponse || typeof parsedResponse.stressLevel !== 'number') {
+        throw new Error('Invalid response format');
+      }
+
       history.push(parsedResponse.voiceResponse);
       console.log('History:', history);
-      console.log('Generated response:', parsedResponse);
       
       return parsedResponse;
     } catch (error) {
       console.error('Error generating response:', error);
-      throw error;
+      // Return a fallback response instead of throwing
+      return {
+        voiceResponse: "I apologize, but I'm having trouble understanding right now. Could you please repeat that?",
+        stressLevel: 3
+      };
     }
   };
 

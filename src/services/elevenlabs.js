@@ -32,7 +32,7 @@ export const setupElevenLabs = () => {
           },
           body: JSON.stringify({
             text,
-            model_id: "eleven_multilingual_v2",
+            model_id: "eleven_flash_v2",
             voice_settings: {
               speed: 1.0,
               stability: 1.0,
