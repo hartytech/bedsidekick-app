@@ -370,10 +370,6 @@
             } catch (error) {
                 console.error('Error starting recording:', error);
                 // Clean up on error
-                if (audioContext != null) {
-                    await audioContext.close();
-                    audioContext = null;
-                }
                 if (window.audioStream) {
                     window.audioStream.getTracks().forEach(track => track.stop());
                     window.audioStream = null;
