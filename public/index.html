@@ -276,7 +276,7 @@
             <div class="text-container">
                 <h1 id="mainTitle" style="flex-wrap: wrap;">Hey. How Can I Help you today</h1>
                 <div class="controls">
-                    <button id="startBtn" class="start-button" onclick="startRecording()">Start Recording</button>
+                    <button id="startBtn" class="start-button" onclick="startRecording()">Start Chat</button>
 
                 </div>
             </div>
@@ -359,7 +359,7 @@
                 monitorAudioLevel();
                 
                 const startBtn = document.getElementById('startBtn');
-                startBtn.textContent = 'Stop Recording';
+                startBtn.textContent = 'Stop Chat';
             } catch (error) {
                 console.error('Error starting recording:', error);
             }
