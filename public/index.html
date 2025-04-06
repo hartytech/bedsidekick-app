@@ -300,11 +300,11 @@
         const responseDiv = document.getElementById('response');
         const audioPlayer = document.getElementById('audioPlayer');
         
-        let mediaRecorder;
-        let audioContext;
-        let analyser;
-        let microphone;
-        let silenceTimeout;
+        let mediaRecorder = null;
+        let audioContext = null;
+        let analyser = null;
+        let microphone = null;
+        let silenceTimeout = null;
         let isRecording = false;
         let recordingChunks = []; // For recording
         let playbackChunks = []; // For playback
@@ -343,10 +343,17 @@
 
         async function startRecording() {
             try {
+                // Clean up any existing audio context
+                if (audioContext) {
+                    await audioContext.close();
+                }
+                
+                // Initialize new audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 
                 // Set up audio context and analyser
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const source = audioContext.createMediaStreamSource(stream);
                 analyser = audioContext.createAnalyser();
                 analyser.fftSize = 2048;
@@ -358,10 +365,19 @@
                 startNewRecording();
                 monitorAudioLevel();
                 
-                const startBtn = document.getElementById('startBtn');
-                startBtn.textContent = 'Stop Chat';
+                startBtn.textContent = 'Stop Recording';
+                startBtn.onclick = stopRecording;
             } catch (error) {
                 console.error('Error starting recording:', error);
+                // Clean up on error
+                if (audioContext) {
+                    await audioContext.close();
+                    audioContext = null;
+                }
+                if (window.audioStream) {
+                    window.audioStream.getTracks().forEach(track => track.stop());
+                    window.audioStream = null;
+                }
             }
         }
 
@@ -482,7 +498,7 @@
             requestAnimationFrame(monitorAudioLevel);
         }
 
-        function stopRecording() {
+        async function stopRecording() {
             isRecording = false;
             if (mediaRecorder && mediaRecorder.state !== 'inactive') {
                 mediaRecorder.stop();
@@ -492,13 +508,19 @@
                 window.audioStream = null;
             }
             if (audioContext) {
-                audioContext.close();
+                await audioContext.close();
+                audioContext = null;
+            }
+            if (analyser) {
+                analyser = null;
             }
             recordingChunks = [];
-            statusDiv.textContent = 'Stopped';
-            statusDiv.className = 'status disconnected';
-            const startBtn = document.getElementById('startBtn');
+            if (statusDiv) {
+                statusDiv.textContent = 'Stopped';
+                statusDiv.className = 'status disconnected';
+            }
             startBtn.textContent = 'Start Recording';
+            startBtn.onclick = startRecording;
         }
 
         ws.onopen = () => {
