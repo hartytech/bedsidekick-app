@@ -370,7 +370,7 @@
             } catch (error) {
                 console.error('Error starting recording:', error);
                 // Clean up on error
-                if (audioContext) {
+                if (audioContext != null) {
                     await audioContext.close();
                     audioContext = null;
                 }
